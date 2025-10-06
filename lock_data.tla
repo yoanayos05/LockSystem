@@ -46,6 +46,9 @@ ShipStatus == {"go_to_west", "go_to_east", "goal_reached"}
 \* Get the low/high side from a lock with a given orientation
 LowSide(lock_orientation) == IF lock_orientation = "west_low" THEN "west" ELSE "east"
 HighSide(lock_orientation) == IF lock_orientation = "west_low" THEN "east" ELSE "west"
+
+\* Helper Function For Getting Valve Side
+getValveSide(lockOrientation, side) == IF lockOrientation = "west_low" /\ side = "west" THEN "low" ELSE "high"
                                               
 
 \* End points for ship locations
@@ -60,5 +63,6 @@ IsLock(location) == location % 2 = 1
 
 =============================================================================
 \* Modification History
+\* Last modified Mon Oct 06 16:32:36 CEST 2025 by 20241856
 \* Last modified Wed Sep 24 10:40:42 CEST 2025 by mvolk
 \* Created Thu Aug 28 11:30:37 CEST 2025 by mvolk
