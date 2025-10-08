@@ -48,8 +48,10 @@ LowSide(lock_orientation) == IF lock_orientation = "west_low" THEN "west" ELSE "
 HighSide(lock_orientation) == IF lock_orientation = "west_low" THEN "east" ELSE "west"
 
 \* Helper Function For Getting Valve Side
-getValveSide(lockOrientation, side) == IF lockOrientation = "west_low" /\ side = "west" THEN "low" ELSE "high"
-                                              
+
+\* Original getValveSide(lockOrientation, side) == IF lockOrientation = "west_low" /\ side = "west" THEN "low" ELSE "high"
+\* It does not account for a ship starting at the east end, but the program usually starts in the west hence why it works
+getValveSide(lockOrientation, side) == IF (lockOrientation = "west_low" /\ side = "west") \/ (lockOrientation = "east_low" /\ side = "east") THEN "low" ELSE "high"                                             
 
 \* End points for ship locations
 WestEnd == 0
@@ -63,6 +65,7 @@ IsLock(location) == location % 2 = 1
 
 =============================================================================
 \* Modification History
+\* Last modified Wed Oct 08 19:11:33 CEST 2025 by 20241856
 \* Last modified Mon Oct 06 16:32:36 CEST 2025 by 20241856
 \* Last modified Wed Sep 24 10:40:42 CEST 2025 by mvolk
 \* Created Thu Aug 28 11:30:37 CEST 2025 by mvolk

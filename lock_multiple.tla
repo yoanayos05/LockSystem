@@ -249,30 +249,36 @@ begin
   ControlStart:
     \* Implement behaviour
     while TRUE do
-        await lockCommand.command = "finished";
-        oldLocation := shipLocation;
+        await lockCommand[req.lock].command = "finished";
         read(requests, req);
-        
+        moved[req.ship] := FALSE;
+        \* Note for report: moved takes the role of oldLocation, so its use was already demonstrated in single lock
+    CheckValidityOfMove;
+    \*Here I'm thinking of denying the process if an opposite door/valve is opened. I want it at the start cause if I were to do it separately for valves and doors it may lead to a deadlock
     OpenValve:
-        lockCommand := [command |-> "change_valve", open |-> TRUE, side |-> getValveSide(lockOrientation, req.side)];
+        lockCommand[req.lock] := [command |-> "change_valve", open |-> TRUE, side |-> getValveSide(lockOrientations[req.lock], req.side)];
         
     CloseValve:
-        await lockCommand.command = "finished";
-        lockCommand := [command |-> "change_valve", open |-> FALSE, side |-> getValveSide(lockOrientation, req.side)];
+        await lockCommand[req.lock].command = "finished";
+        lockCommand[req.lock] := [command |-> "change_valve", open |-> FALSE, side |-> getValveSide(lockOrientations[req.lock], req.side)];
         
     OpenDoor:
-        await lockCommand.command = "finished";
-        lockCommand := [command |-> "change_door", open |-> TRUE, side |-> req.side];
+        await lockCommand[req.lock].command = "finished";
+        lockCommand[req.lock] := [command |-> "change_door", open |-> TRUE, side |-> req.side];
         
-    GivePermission:
-        await lockCommand.command = "finished";
-        write(permissions, [lock |-> 1, granted |-> TRUE]);
+    GiveOrDenyPermission:
+        await lockCommand[req.lock].command = "finished";
+    \* Here I want to handle two ships coming from oposite directions, both at max capacity.
+        write(permissions[req.ship], [lock |-> req.lock, granted |-> TRUE]);
         
     WaitForShipToPassAndCloseDoor:
-        await shipLocation # oldLocation;
-        lockCommand := [command |-> "change_door", open |-> FALSE, side |-> req.side];
+        await moved[req.ship];
+        lockCommand[req.lock] := [command |-> "change_door", open |-> FALSE, side |-> req.side];
+        
     WaitCloseDoor:
-        await lockCommand.command = "finished";
+        await lockCommand[req.lock].command = "finished";
+     
+     end while;
     
 end process;
 
@@ -280,9 +286,10 @@ end process;
 end algorithm; *)
 
 
-\* BEGIN TRANSLATION (chksum(pcal) = "199ef87a" /\ chksum(tla) = "5111c904")
-VARIABLES lockOrientations, doorsOpen, valvesOpen, waterLevel, shipLocations, 
-          shipStates, lockCommand, requests, permissions, moved, pc
+\* BEGIN TRANSLATION (chksum(pcal) = "f47eb9bc" /\ chksum(tla) = "7707f3db")
+VARIABLES pc, lockOrientations, doorsOpen, valvesOpen, waterLevel, 
+          shipLocations, shipStates, lockCommand, requests, permissions, 
+          moved
 
 (* define statement *)
 InLock(ship) == IsLock(shipLocations[ship])
@@ -335,10 +342,11 @@ ShipsReachGoals == FALSE
 
 MaxShipsPerLocation == FALSE
 
-VARIABLE perm
+VARIABLES perm, req, oldLocation
 
-vars == << lockOrientations, doorsOpen, valvesOpen, waterLevel, shipLocations, 
-           shipStates, lockCommand, requests, permissions, moved, pc, perm >>
+vars == << pc, lockOrientations, doorsOpen, valvesOpen, waterLevel, 
+           shipLocations, shipStates, lockCommand, requests, permissions, 
+           moved, perm, req, oldLocation >>
 
 ProcSet == (Locks) \cup (Ships) \cup {0}
 
@@ -355,6 +363,9 @@ Init == (* Global variables *)
         /\ moved = [s \in Ships |-> FALSE]
         (* Process shipProcess *)
         /\ perm = [self \in Ships |-> [lock |-> 1, granted |-> FALSE]]
+        (* Process controlProcess *)
+        /\ req = [ship |-> 2, lock |-> 1, side |-> "west"]
+        /\ oldLocation = -200
         /\ pc = [self \in ProcSet |-> CASE self \in Locks -> "LockWaitForCommand"
                                         [] self \in Ships -> "ShipNextIteration"
                                         [] self = 0 -> "ControlStart"]
@@ -374,7 +385,7 @@ LockWaitForCommand(self) == /\ pc[self] = "LockWaitForCommand"
                             /\ UNCHANGED << lockOrientations, waterLevel, 
                                             shipLocations, shipStates, 
                                             lockCommand, requests, permissions, 
-                                            moved, perm >>
+                                            moved, perm, req, oldLocation >>
 
 LockUpdateWaterLevel(self) == /\ pc[self] = "LockUpdateWaterLevel"
                               /\ IF (valvesOpen[self])["low"]
@@ -394,7 +405,7 @@ LockUpdateWaterLevel(self) == /\ pc[self] = "LockUpdateWaterLevel"
                                               valvesOpen, shipLocations, 
                                               shipStates, lockCommand, 
                                               requests, permissions, moved, 
-                                              perm >>
+                                              perm, req, oldLocation >>
 
 LockCommandFinished(self) == /\ pc[self] = "LockCommandFinished"
                              /\ lockCommand' = [lockCommand EXCEPT ![self].command = "finished"]
@@ -403,7 +414,7 @@ LockCommandFinished(self) == /\ pc[self] = "LockCommandFinished"
                                              valvesOpen, waterLevel, 
                                              shipLocations, shipStates, 
                                              requests, permissions, moved, 
-                                             perm >>
+                                             perm, req, oldLocation >>
 
 lockProcess(self) == LockWaitForCommand(self) \/ LockUpdateWaterLevel(self)
                         \/ LockCommandFinished(self)
@@ -428,7 +439,7 @@ ShipNextIteration(self) == /\ pc[self] = "ShipNextIteration"
                                            valvesOpen, waterLevel, 
                                            shipLocations, shipStates, 
                                            lockCommand, requests, permissions, 
-                                           moved, perm >>
+                                           moved, perm, req, oldLocation >>
 
 ShipGoalReachedEast(self) == /\ pc[self] = "ShipGoalReachedEast"
                              /\ shipStates' = [shipStates EXCEPT ![self] = "goal_reached"]
@@ -437,7 +448,7 @@ ShipGoalReachedEast(self) == /\ pc[self] = "ShipGoalReachedEast"
                                              valvesOpen, waterLevel, 
                                              shipLocations, lockCommand, 
                                              requests, permissions, moved, 
-                                             perm >>
+                                             perm, req, oldLocation >>
 
 ShipMoveEast(self) == /\ pc[self] = "ShipMoveEast"
                       /\ IF perm[self].granted
@@ -450,7 +461,8 @@ ShipMoveEast(self) == /\ pc[self] = "ShipMoveEast"
                       /\ pc' = [pc EXCEPT ![self] = "ShipNextIteration"]
                       /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
                                       waterLevel, shipStates, lockCommand, 
-                                      requests, permissions, perm >>
+                                      requests, permissions, perm, req, 
+                                      oldLocation >>
 
 ShipRequestWest(self) == /\ pc[self] = "ShipRequestWest"
                          /\ requests' = Append(requests, ([ship |-> self, lock |-> GetLock(shipLocations[self]+1), side |-> "west"]))
@@ -458,7 +470,7 @@ ShipRequestWest(self) == /\ pc[self] = "ShipRequestWest"
                          /\ UNCHANGED << lockOrientations, doorsOpen, 
                                          valvesOpen, waterLevel, shipLocations, 
                                          shipStates, lockCommand, permissions, 
-                                         moved, perm >>
+                                         moved, perm, req, oldLocation >>
 
 ShipWaitForWest(self) == /\ pc[self] = "ShipWaitForWest"
                          /\ (permissions[self]) /= <<>>
@@ -470,7 +482,7 @@ ShipWaitForWest(self) == /\ pc[self] = "ShipWaitForWest"
                          /\ UNCHANGED << lockOrientations, doorsOpen, 
                                          valvesOpen, waterLevel, shipLocations, 
                                          shipStates, lockCommand, requests, 
-                                         moved >>
+                                         moved, req, oldLocation >>
 
 ShipRequestEastInLock(self) == /\ pc[self] = "ShipRequestEastInLock"
                                /\ requests' = Append(requests, ([ship |-> self, lock |-> GetLock(shipLocations[self]), side |-> "east"]))
@@ -479,7 +491,7 @@ ShipRequestEastInLock(self) == /\ pc[self] = "ShipRequestEastInLock"
                                                valvesOpen, waterLevel, 
                                                shipLocations, shipStates, 
                                                lockCommand, permissions, moved, 
-                                               perm >>
+                                               perm, req, oldLocation >>
 
 ShipWaitForEastInLock(self) == /\ pc[self] = "ShipWaitForEastInLock"
                                /\ (permissions[self]) /= <<>>
@@ -491,7 +503,8 @@ ShipWaitForEastInLock(self) == /\ pc[self] = "ShipWaitForEastInLock"
                                /\ UNCHANGED << lockOrientations, doorsOpen, 
                                                valvesOpen, waterLevel, 
                                                shipLocations, shipStates, 
-                                               lockCommand, requests, moved >>
+                                               lockCommand, requests, moved, 
+                                               req, oldLocation >>
 
 ShipTurnAround(self) == /\ pc[self] = "ShipTurnAround"
                         /\ shipStates' = [shipStates EXCEPT ![self] = IF shipLocations[self] = WestEnd THEN "go_to_east" ELSE "go_to_west"]
@@ -499,7 +512,7 @@ ShipTurnAround(self) == /\ pc[self] = "ShipTurnAround"
                         /\ UNCHANGED << lockOrientations, doorsOpen, 
                                         valvesOpen, waterLevel, shipLocations, 
                                         lockCommand, requests, permissions, 
-                                        moved, perm >>
+                                        moved, perm, req, oldLocation >>
 
 ShipGoalReachedWest(self) == /\ pc[self] = "ShipGoalReachedWest"
                              /\ shipStates' = [shipStates EXCEPT ![self] = "goal_reached"]
@@ -508,7 +521,7 @@ ShipGoalReachedWest(self) == /\ pc[self] = "ShipGoalReachedWest"
                                              valvesOpen, waterLevel, 
                                              shipLocations, lockCommand, 
                                              requests, permissions, moved, 
-                                             perm >>
+                                             perm, req, oldLocation >>
 
 ShipMoveWest(self) == /\ pc[self] = "ShipMoveWest"
                       /\ IF perm[self].granted
@@ -521,7 +534,8 @@ ShipMoveWest(self) == /\ pc[self] = "ShipMoveWest"
                       /\ pc' = [pc EXCEPT ![self] = "ShipNextIteration"]
                       /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
                                       waterLevel, shipStates, lockCommand, 
-                                      requests, permissions, perm >>
+                                      requests, permissions, perm, req, 
+                                      oldLocation >>
 
 ShipRequestEast(self) == /\ pc[self] = "ShipRequestEast"
                          /\ requests' = Append(requests, ([ship |-> self, lock |-> GetLock(shipLocations[self]-1), side |-> "east"]))
@@ -529,7 +543,7 @@ ShipRequestEast(self) == /\ pc[self] = "ShipRequestEast"
                          /\ UNCHANGED << lockOrientations, doorsOpen, 
                                          valvesOpen, waterLevel, shipLocations, 
                                          shipStates, lockCommand, permissions, 
-                                         moved, perm >>
+                                         moved, perm, req, oldLocation >>
 
 ShipWaitForEast(self) == /\ pc[self] = "ShipWaitForEast"
                          /\ (permissions[self]) /= <<>>
@@ -541,7 +555,7 @@ ShipWaitForEast(self) == /\ pc[self] = "ShipWaitForEast"
                          /\ UNCHANGED << lockOrientations, doorsOpen, 
                                          valvesOpen, waterLevel, shipLocations, 
                                          shipStates, lockCommand, requests, 
-                                         moved >>
+                                         moved, req, oldLocation >>
 
 ShipRequestWestInLock(self) == /\ pc[self] = "ShipRequestWestInLock"
                                /\ requests' = Append(requests, ([ship |-> self, lock |-> GetLock(shipLocations[self]), side |-> "west"]))
@@ -550,7 +564,7 @@ ShipRequestWestInLock(self) == /\ pc[self] = "ShipRequestWestInLock"
                                                valvesOpen, waterLevel, 
                                                shipLocations, shipStates, 
                                                lockCommand, permissions, moved, 
-                                               perm >>
+                                               perm, req, oldLocation >>
 
 ShipWaitForWestInLock(self) == /\ pc[self] = "ShipWaitForWestInLock"
                                /\ (permissions[self]) /= <<>>
@@ -562,7 +576,8 @@ ShipWaitForWestInLock(self) == /\ pc[self] = "ShipWaitForWestInLock"
                                /\ UNCHANGED << lockOrientations, doorsOpen, 
                                                valvesOpen, waterLevel, 
                                                shipLocations, shipStates, 
-                                               lockCommand, requests, moved >>
+                                               lockCommand, requests, moved, 
+                                               req, oldLocation >>
 
 shipProcess(self) == ShipNextIteration(self) \/ ShipGoalReachedEast(self)
                         \/ ShipMoveEast(self) \/ ShipRequestWest(self)
@@ -576,14 +591,70 @@ shipProcess(self) == ShipNextIteration(self) \/ ShipGoalReachedEast(self)
                         \/ ShipWaitForWestInLock(self)
 
 ControlStart == /\ pc[0] = "ControlStart"
-                /\ TRUE
-                /\ pc' = [pc EXCEPT ![0] = "Done"]
+                /\ lockCommand[req.lock].command = "finished"
+                /\ requests /= <<>>
+                /\ req' = Head(requests)
+                /\ requests' = Tail(requests)
+                /\ moved' = [moved EXCEPT ![req'.ship] = FALSE]
+                /\ oldLocation' = shipLocations[req'.ship]
+                /\ pc' = [pc EXCEPT ![0] = "OpenValve"]
                 /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
                                 waterLevel, shipLocations, shipStates, 
-                                lockCommand, requests, permissions, moved, 
-                                perm >>
+                                lockCommand, permissions, perm >>
 
-controlProcess == ControlStart
+OpenValve == /\ pc[0] = "OpenValve"
+             /\ lockCommand' = [lockCommand EXCEPT ![req.lock] = [command |-> "change_valve", open |-> TRUE, side |-> getValveSide(lockOrientations[req.lock], req.side)]]
+             /\ pc' = [pc EXCEPT ![0] = "CloseValve"]
+             /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
+                             waterLevel, shipLocations, shipStates, requests, 
+                             permissions, moved, perm, req, oldLocation >>
+
+CloseValve == /\ pc[0] = "CloseValve"
+              /\ lockCommand[req.lock].command = "finished"
+              /\ lockCommand' = [lockCommand EXCEPT ![req.lock] = [command |-> "change_valve", open |-> FALSE, side |-> getValveSide(lockOrientations[req.lock], req.side)]]
+              /\ pc' = [pc EXCEPT ![0] = "OpenDoor"]
+              /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
+                              waterLevel, shipLocations, shipStates, requests, 
+                              permissions, moved, perm, req, oldLocation >>
+
+OpenDoor == /\ pc[0] = "OpenDoor"
+            /\ lockCommand[req.lock].command = "finished"
+            /\ lockCommand' = [lockCommand EXCEPT ![req.lock] = [command |-> "change_door", open |-> TRUE, side |-> req.side]]
+            /\ pc' = [pc EXCEPT ![0] = "GivePermission"]
+            /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
+                            waterLevel, shipLocations, shipStates, requests, 
+                            permissions, moved, perm, req, oldLocation >>
+
+GivePermission == /\ pc[0] = "GivePermission"
+                  /\ lockCommand[req.lock].command = "finished"
+                  /\ permissions' = [permissions EXCEPT ![req.ship] = Append((permissions[req.ship]), ([lock |-> req.lock, granted |-> TRUE]))]
+                  /\ pc' = [pc EXCEPT ![0] = "WaitForShipToPassAndCloseDoor"]
+                  /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
+                                  waterLevel, shipLocations, shipStates, 
+                                  lockCommand, requests, moved, perm, req, 
+                                  oldLocation >>
+
+WaitForShipToPassAndCloseDoor == /\ pc[0] = "WaitForShipToPassAndCloseDoor"
+                                 /\ moved[req.ship]
+                                 /\ lockCommand' = [lockCommand EXCEPT ![req.lock] = [command |-> "change_door", open |-> FALSE, side |-> req.side]]
+                                 /\ pc' = [pc EXCEPT ![0] = "WaitCloseDoor"]
+                                 /\ UNCHANGED << lockOrientations, doorsOpen, 
+                                                 valvesOpen, waterLevel, 
+                                                 shipLocations, shipStates, 
+                                                 requests, permissions, moved, 
+                                                 perm, req, oldLocation >>
+
+WaitCloseDoor == /\ pc[0] = "WaitCloseDoor"
+                 /\ lockCommand[req.lock].command = "finished"
+                 /\ pc' = [pc EXCEPT ![0] = "ControlStart"]
+                 /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
+                                 waterLevel, shipLocations, shipStates, 
+                                 lockCommand, requests, permissions, moved, 
+                                 perm, req, oldLocation >>
+
+controlProcess == ControlStart \/ OpenValve \/ CloseValve \/ OpenDoor
+                     \/ GivePermission \/ WaitForShipToPassAndCloseDoor
+                     \/ WaitCloseDoor
 
 Next == controlProcess
            \/ (\E self \in Locks: lockProcess(self))
@@ -595,7 +666,7 @@ Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Oct 08 16:23:37 CEST 2025 by 20241856
+\* Last modified Wed Oct 08 19:29:36 CEST 2025 by 20241856
 \* Last modified Fri Oct 03 10:34:10 CEST 2025 by 20241856
 \* Last modified Wed Sep 24 12:00:55 CEST 2025 by mvolk
 \* Created Thu Aug 28 11:30:07 CEST 2025 by mvolk
