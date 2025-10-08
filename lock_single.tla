@@ -243,8 +243,6 @@ oldLocation = -200;
 begin
   ControlStart:
     \* Implement behaviour
-    \* Four wait permissions: Ship wait for west, ship wait for east in lock,Ship wait for east, Ship wait for West in lock
-    \* First Ship wait for west
     while TRUE do
         await lockCommand.command = "finished";
         oldLocation := shipLocation;
@@ -255,7 +253,7 @@ begin
         
     CloseValve:
         await lockCommand.command = "finished";
-        lockCommand := [command |-> "change_valve", open |-> TRUE, side |-> getValveSide(lockOrientation, req.side)];
+        lockCommand := [command |-> "change_valve", open |-> FALSE, side |-> getValveSide(lockOrientation, req.side)];
         
     OpenDoor:
         await lockCommand.command = "finished";
@@ -278,7 +276,7 @@ end process;
 end algorithm; *)
 
 
-\* BEGIN TRANSLATION (chksum(pcal) = "1453a788" /\ chksum(tla) = "9c6dd1b5")
+\* BEGIN TRANSLATION (chksum(pcal) = "33dd9771" /\ chksum(tla) = "1ddc7cac")
 VARIABLES pc, lockOrientation, doorsOpen, valvesOpen, waterLevel, 
           shipLocation, shipStatus, lockCommand, requests, permissions
 
@@ -600,7 +598,7 @@ OpenValve == /\ pc[0] = "OpenValve"
 
 CloseValve == /\ pc[0] = "CloseValve"
               /\ lockCommand.command = "finished"
-              /\ lockCommand' = [command |-> "change_valve", open |-> TRUE, side |-> getValveSide(lockOrientation, req.side)]
+              /\ lockCommand' = [command |-> "change_valve", open |-> FALSE, side |-> getValveSide(lockOrientation, req.side)]
               /\ pc' = [pc EXCEPT ![0] = "OpenDoor"]
               /\ UNCHANGED << lockOrientation, doorsOpen, valvesOpen, 
                               waterLevel, shipLocation, shipStatus, requests, 
@@ -658,7 +656,7 @@ Spec == /\ Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Mon Oct 06 16:32:44 CEST 2025 by 20241856
+\* Last modified Wed Oct 08 16:31:35 CEST 2025 by 20241856
 \* Last modified Wed Oct 01 17:36:23 CEST 2025 by 20241856
 \* Last modified Wed Sep 24 11:08:53 CEST 2025 by mvolk
 \* Created Thu Aug 28 11:30:23 CEST 2025 by mvolk

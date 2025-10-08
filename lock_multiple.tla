@@ -240,10 +240,39 @@ end process;
 \* Process for the controller
 \*****************************
 process controlProcess = 0
+
+variables
+req = [ship |-> 2, lock |-> 1, side |-> "west"];
+oldLocation = -200;
+
 begin
   ControlStart:
     \* Implement behaviour
-    skip;
+    while TRUE do
+        await lockCommand.command = "finished";
+        oldLocation := shipLocation;
+        read(requests, req);
+        
+    OpenValve:
+        lockCommand := [command |-> "change_valve", open |-> TRUE, side |-> getValveSide(lockOrientation, req.side)];
+        
+    CloseValve:
+        await lockCommand.command = "finished";
+        lockCommand := [command |-> "change_valve", open |-> FALSE, side |-> getValveSide(lockOrientation, req.side)];
+        
+    OpenDoor:
+        await lockCommand.command = "finished";
+        lockCommand := [command |-> "change_door", open |-> TRUE, side |-> req.side];
+        
+    GivePermission:
+        await lockCommand.command = "finished";
+        write(permissions, [lock |-> 1, granted |-> TRUE]);
+        
+    WaitForShipToPassAndCloseDoor:
+        await shipLocation # oldLocation;
+        lockCommand := [command |-> "change_door", open |-> FALSE, side |-> req.side];
+    WaitCloseDoor:
+        await lockCommand.command = "finished";
     
 end process;
 
@@ -566,6 +595,7 @@ Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
+\* Last modified Wed Oct 08 16:23:37 CEST 2025 by 20241856
 \* Last modified Fri Oct 03 10:34:10 CEST 2025 by 20241856
 \* Last modified Wed Sep 24 12:00:55 CEST 2025 by mvolk
 \* Created Thu Aug 28 11:30:07 CEST 2025 by mvolk
