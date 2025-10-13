@@ -37,6 +37,9 @@ define
 \*****************************
 \* Check if given ship is within a lock
 InLock(ship) == IsLock(shipLocations[ship])
+NumberAtLocation(loc) == Cardinality({s \in Ships: shipLocations[s] = loc})
+NumberAtLocationCorrect(loc) == IF IsLock(loc) THEN NumberAtLocation(loc) <= MaxShipsLock ELSE NumberAtLocation(loc) <= MaxShipsLocation
+
 
 
 \*****************************
@@ -132,7 +135,7 @@ end macro
 \*****************************
 \* Process for a lock
 \*****************************
-process lockProcess \in Locks
+fair process lockProcess \in Locks
 begin
   LockWaitForCommand:
     while TRUE do
@@ -158,7 +161,7 @@ end process;
 \*****************************
 \* Process for a ship
 \*****************************
-process shipProcess \in Ships
+fair process shipProcess \in Ships
 variables
   perm = [lock |-> 1, granted |-> FALSE]
 begin
@@ -239,11 +242,12 @@ end process;
 \*****************************
 \* Process for the controller
 \*****************************
-process controlProcess = 0
+fair process controlProcess = 0
+
 
 variables
 req = [ship |-> 2, lock |-> 1, side |-> "west"];
-oldLocation = -200;
+activeShipNumber = 0
 
 begin
   ControlStart:
@@ -253,8 +257,30 @@ begin
         read(requests, req);
         moved[req.ship] := FALSE;
         \* Note for report: moved takes the role of oldLocation, so its use was already demonstrated in single lock
-    CheckValidityOfMove;
+    CheckEntranceIntoCanal:
+    \* Here I'm denying the entrance of a ship into the system if it would pass the limit
+    \* The limit is the max number of ships per location (maybe make it maxPerLocation + maxPerLock - 1)
+        if shipLocations[req.ship] = 0 \/ shipLocations[req.ship] = EastEnd then
+            if activeShipNumber \geq MaxShipsLocation then
+                write(permissions[req.ship],[lock |-> req.lock, granted |-> FALSE]);
+                goto WaitCloseDoor;
+            else activeShipNumber := activeShipNumber + 1;
+            end if;
+        end if;
+    CheckMechanicalValidityOfMove:
     \*Here I'm thinking of denying the process if an opposite door/valve is opened. I want it at the start cause if I were to do it separately for valves and doors it may lead to a deadlock
+        if doorsOpen[req.lock][getOtherSide(req.side)] \/
+            valvesOpen[req.lock][getOtherSide(getValveSide(lockOrientations[req.lock], req.side))]
+        then
+            write(permissions[req.ship],[lock |-> req.lock, granted |-> FALSE]);
+            goto WaitCloseDoor;
+        end if;
+    CheckTargetLimit:
+    \*Check if a ship would enter a room that passes the limit
+        if ~NumberAtLocationCorrect(IF shipStates[req.ship] = "go_to_west" THEN shipLocations[req.ship] - 1 ELSE shipLocations[req.ship] + 1) then 
+            write(permissions[req.ship],[lock |-> req.lock, granted |-> FALSE]);
+            goto WaitCloseDoor;
+        end if;
     OpenValve:
         lockCommand[req.lock] := [command |-> "change_valve", open |-> TRUE, side |-> getValveSide(lockOrientations[req.lock], req.side)];
         
@@ -266,14 +292,20 @@ begin
         await lockCommand[req.lock].command = "finished";
         lockCommand[req.lock] := [command |-> "change_door", open |-> TRUE, side |-> req.side];
         
-    GiveOrDenyPermission:
+    GivePermission:
         await lockCommand[req.lock].command = "finished";
-    \* Here I want to handle two ships coming from oposite directions, both at max capacity.
+        assert doorsOpen[req.lock][req.side];        
         write(permissions[req.ship], [lock |-> req.lock, granted |-> TRUE]);
         
     WaitForShipToPassAndCloseDoor:
         await moved[req.ship];
+        moved[req.ship] := FALSE;
         lockCommand[req.lock] := [command |-> "change_door", open |-> FALSE, side |-> req.side];
+        
+    UpdateActiveShipCount:
+        if shipStates[req.ship] = "goal_reached" then 
+            activeShipNumber := activeShipNumber - 1;
+        end if;
         
     WaitCloseDoor:
         await lockCommand[req.lock].command = "finished";
@@ -286,13 +318,16 @@ end process;
 end algorithm; *)
 
 
-\* BEGIN TRANSLATION (chksum(pcal) = "f47eb9bc" /\ chksum(tla) = "7707f3db")
+\* BEGIN TRANSLATION (chksum(pcal) = "d36680f0" /\ chksum(tla) = "81f51b9b")
 VARIABLES pc, lockOrientations, doorsOpen, valvesOpen, waterLevel, 
           shipLocations, shipStates, lockCommand, requests, permissions, 
           moved
 
 (* define statement *)
 InLock(ship) == IsLock(shipLocations[ship])
+NumberAtLocation(loc) == Cardinality({s \in Ships: shipLocations[s] = loc})
+NumberAtLocationCorrect(loc) == IF IsLock(loc) THEN NumberAtLocation(loc) <= MaxShipsLock ELSE NumberAtLocation(loc) <= MaxShipsLocation
+
 
 
 
@@ -342,11 +377,11 @@ ShipsReachGoals == FALSE
 
 MaxShipsPerLocation == FALSE
 
-VARIABLES perm, req, oldLocation
+VARIABLES perm, req, activeShipNumber
 
 vars == << pc, lockOrientations, doorsOpen, valvesOpen, waterLevel, 
            shipLocations, shipStates, lockCommand, requests, permissions, 
-           moved, perm, req, oldLocation >>
+           moved, perm, req, activeShipNumber >>
 
 ProcSet == (Locks) \cup (Ships) \cup {0}
 
@@ -365,7 +400,7 @@ Init == (* Global variables *)
         /\ perm = [self \in Ships |-> [lock |-> 1, granted |-> FALSE]]
         (* Process controlProcess *)
         /\ req = [ship |-> 2, lock |-> 1, side |-> "west"]
-        /\ oldLocation = -200
+        /\ activeShipNumber = 0
         /\ pc = [self \in ProcSet |-> CASE self \in Locks -> "LockWaitForCommand"
                                         [] self \in Ships -> "ShipNextIteration"
                                         [] self = 0 -> "ControlStart"]
@@ -378,14 +413,14 @@ LockWaitForCommand(self) == /\ pc[self] = "LockWaitForCommand"
                                   ELSE /\ IF lockCommand[self].command = "change_valve"
                                              THEN /\ valvesOpen' = [valvesOpen EXCEPT ![self][lockCommand[self].side] = lockCommand[self].open]
                                              ELSE /\ Assert(FALSE, 
-                                                            "Failure of assertion at line 148, column 9.")
+                                                            "Failure of assertion at line 151, column 9.")
                                                   /\ UNCHANGED valvesOpen
                                        /\ UNCHANGED doorsOpen
                             /\ pc' = [pc EXCEPT ![self] = "LockUpdateWaterLevel"]
                             /\ UNCHANGED << lockOrientations, waterLevel, 
                                             shipLocations, shipStates, 
                                             lockCommand, requests, permissions, 
-                                            moved, perm, req, oldLocation >>
+                                            moved, perm, req, activeShipNumber >>
 
 LockUpdateWaterLevel(self) == /\ pc[self] = "LockUpdateWaterLevel"
                               /\ IF (valvesOpen[self])["low"]
@@ -405,7 +440,7 @@ LockUpdateWaterLevel(self) == /\ pc[self] = "LockUpdateWaterLevel"
                                               valvesOpen, shipLocations, 
                                               shipStates, lockCommand, 
                                               requests, permissions, moved, 
-                                              perm, req, oldLocation >>
+                                              perm, req, activeShipNumber >>
 
 LockCommandFinished(self) == /\ pc[self] = "LockCommandFinished"
                              /\ lockCommand' = [lockCommand EXCEPT ![self].command = "finished"]
@@ -414,7 +449,7 @@ LockCommandFinished(self) == /\ pc[self] = "LockCommandFinished"
                                              valvesOpen, waterLevel, 
                                              shipLocations, shipStates, 
                                              requests, permissions, moved, 
-                                             perm, req, oldLocation >>
+                                             perm, req, activeShipNumber >>
 
 lockProcess(self) == LockWaitForCommand(self) \/ LockUpdateWaterLevel(self)
                         \/ LockCommandFinished(self)
@@ -433,13 +468,13 @@ ShipNextIteration(self) == /\ pc[self] = "ShipNextIteration"
                                                                   THEN /\ pc' = [pc EXCEPT ![self] = "ShipRequestEast"]
                                                                   ELSE /\ pc' = [pc EXCEPT ![self] = "ShipRequestWestInLock"]
                                             ELSE /\ Assert(shipStates[self] = "goal_reached", 
-                                                           "Failure of assertion at line 230, column 9.")
+                                                           "Failure of assertion at line 233, column 9.")
                                                  /\ pc' = [pc EXCEPT ![self] = "ShipTurnAround"]
                            /\ UNCHANGED << lockOrientations, doorsOpen, 
                                            valvesOpen, waterLevel, 
                                            shipLocations, shipStates, 
                                            lockCommand, requests, permissions, 
-                                           moved, perm, req, oldLocation >>
+                                           moved, perm, req, activeShipNumber >>
 
 ShipGoalReachedEast(self) == /\ pc[self] = "ShipGoalReachedEast"
                              /\ shipStates' = [shipStates EXCEPT ![self] = "goal_reached"]
@@ -448,12 +483,12 @@ ShipGoalReachedEast(self) == /\ pc[self] = "ShipGoalReachedEast"
                                              valvesOpen, waterLevel, 
                                              shipLocations, lockCommand, 
                                              requests, permissions, moved, 
-                                             perm, req, oldLocation >>
+                                             perm, req, activeShipNumber >>
 
 ShipMoveEast(self) == /\ pc[self] = "ShipMoveEast"
                       /\ IF perm[self].granted
                             THEN /\ Assert(doorsOpen[perm[self].lock][IF InLock(self) THEN "east" ELSE "west"], 
-                                           "Failure of assertion at line 192, column 13.")
+                                           "Failure of assertion at line 195, column 13.")
                                  /\ shipLocations' = [shipLocations EXCEPT ![self] = shipLocations[self] + 1]
                                  /\ moved' = [moved EXCEPT ![self] = TRUE]
                             ELSE /\ TRUE
@@ -462,7 +497,7 @@ ShipMoveEast(self) == /\ pc[self] = "ShipMoveEast"
                       /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
                                       waterLevel, shipStates, lockCommand, 
                                       requests, permissions, perm, req, 
-                                      oldLocation >>
+                                      activeShipNumber >>
 
 ShipRequestWest(self) == /\ pc[self] = "ShipRequestWest"
                          /\ requests' = Append(requests, ([ship |-> self, lock |-> GetLock(shipLocations[self]+1), side |-> "west"]))
@@ -470,19 +505,19 @@ ShipRequestWest(self) == /\ pc[self] = "ShipRequestWest"
                          /\ UNCHANGED << lockOrientations, doorsOpen, 
                                          valvesOpen, waterLevel, shipLocations, 
                                          shipStates, lockCommand, permissions, 
-                                         moved, perm, req, oldLocation >>
+                                         moved, perm, req, activeShipNumber >>
 
 ShipWaitForWest(self) == /\ pc[self] = "ShipWaitForWest"
                          /\ (permissions[self]) /= <<>>
                          /\ perm' = [perm EXCEPT ![self] = Head((permissions[self]))]
                          /\ permissions' = [permissions EXCEPT ![self] = Tail((permissions[self]))]
                          /\ Assert(perm'[self].lock = GetLock(shipLocations[self]+1), 
-                                   "Failure of assertion at line 179, column 13.")
+                                   "Failure of assertion at line 182, column 13.")
                          /\ pc' = [pc EXCEPT ![self] = "ShipMoveEast"]
                          /\ UNCHANGED << lockOrientations, doorsOpen, 
                                          valvesOpen, waterLevel, shipLocations, 
                                          shipStates, lockCommand, requests, 
-                                         moved, req, oldLocation >>
+                                         moved, req, activeShipNumber >>
 
 ShipRequestEastInLock(self) == /\ pc[self] = "ShipRequestEastInLock"
                                /\ requests' = Append(requests, ([ship |-> self, lock |-> GetLock(shipLocations[self]), side |-> "east"]))
@@ -491,20 +526,20 @@ ShipRequestEastInLock(self) == /\ pc[self] = "ShipRequestEastInLock"
                                                valvesOpen, waterLevel, 
                                                shipLocations, shipStates, 
                                                lockCommand, permissions, moved, 
-                                               perm, req, oldLocation >>
+                                               perm, req, activeShipNumber >>
 
 ShipWaitForEastInLock(self) == /\ pc[self] = "ShipWaitForEastInLock"
                                /\ (permissions[self]) /= <<>>
                                /\ perm' = [perm EXCEPT ![self] = Head((permissions[self]))]
                                /\ permissions' = [permissions EXCEPT ![self] = Tail((permissions[self]))]
                                /\ Assert(perm'[self].lock = GetLock(shipLocations[self]), 
-                                         "Failure of assertion at line 187, column 13.")
+                                         "Failure of assertion at line 190, column 13.")
                                /\ pc' = [pc EXCEPT ![self] = "ShipMoveEast"]
                                /\ UNCHANGED << lockOrientations, doorsOpen, 
                                                valvesOpen, waterLevel, 
                                                shipLocations, shipStates, 
                                                lockCommand, requests, moved, 
-                                               req, oldLocation >>
+                                               req, activeShipNumber >>
 
 ShipTurnAround(self) == /\ pc[self] = "ShipTurnAround"
                         /\ shipStates' = [shipStates EXCEPT ![self] = IF shipLocations[self] = WestEnd THEN "go_to_east" ELSE "go_to_west"]
@@ -512,7 +547,7 @@ ShipTurnAround(self) == /\ pc[self] = "ShipTurnAround"
                         /\ UNCHANGED << lockOrientations, doorsOpen, 
                                         valvesOpen, waterLevel, shipLocations, 
                                         lockCommand, requests, permissions, 
-                                        moved, perm, req, oldLocation >>
+                                        moved, perm, req, activeShipNumber >>
 
 ShipGoalReachedWest(self) == /\ pc[self] = "ShipGoalReachedWest"
                              /\ shipStates' = [shipStates EXCEPT ![self] = "goal_reached"]
@@ -521,12 +556,12 @@ ShipGoalReachedWest(self) == /\ pc[self] = "ShipGoalReachedWest"
                                              valvesOpen, waterLevel, 
                                              shipLocations, lockCommand, 
                                              requests, permissions, moved, 
-                                             perm, req, oldLocation >>
+                                             perm, req, activeShipNumber >>
 
 ShipMoveWest(self) == /\ pc[self] = "ShipMoveWest"
                       /\ IF perm[self].granted
                             THEN /\ Assert(doorsOpen[perm[self].lock][IF InLock(self) THEN "west" ELSE "east"], 
-                                           "Failure of assertion at line 223, column 13.")
+                                           "Failure of assertion at line 226, column 13.")
                                  /\ shipLocations' = [shipLocations EXCEPT ![self] = shipLocations[self] - 1]
                                  /\ moved' = [moved EXCEPT ![self] = TRUE]
                             ELSE /\ TRUE
@@ -535,7 +570,7 @@ ShipMoveWest(self) == /\ pc[self] = "ShipMoveWest"
                       /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
                                       waterLevel, shipStates, lockCommand, 
                                       requests, permissions, perm, req, 
-                                      oldLocation >>
+                                      activeShipNumber >>
 
 ShipRequestEast(self) == /\ pc[self] = "ShipRequestEast"
                          /\ requests' = Append(requests, ([ship |-> self, lock |-> GetLock(shipLocations[self]-1), side |-> "east"]))
@@ -543,19 +578,19 @@ ShipRequestEast(self) == /\ pc[self] = "ShipRequestEast"
                          /\ UNCHANGED << lockOrientations, doorsOpen, 
                                          valvesOpen, waterLevel, shipLocations, 
                                          shipStates, lockCommand, permissions, 
-                                         moved, perm, req, oldLocation >>
+                                         moved, perm, req, activeShipNumber >>
 
 ShipWaitForEast(self) == /\ pc[self] = "ShipWaitForEast"
                          /\ (permissions[self]) /= <<>>
                          /\ perm' = [perm EXCEPT ![self] = Head((permissions[self]))]
                          /\ permissions' = [permissions EXCEPT ![self] = Tail((permissions[self]))]
                          /\ Assert(perm'[self].lock = GetLock(shipLocations[self]-1), 
-                                   "Failure of assertion at line 210, column 13.")
+                                   "Failure of assertion at line 213, column 13.")
                          /\ pc' = [pc EXCEPT ![self] = "ShipMoveWest"]
                          /\ UNCHANGED << lockOrientations, doorsOpen, 
                                          valvesOpen, waterLevel, shipLocations, 
                                          shipStates, lockCommand, requests, 
-                                         moved, req, oldLocation >>
+                                         moved, req, activeShipNumber >>
 
 ShipRequestWestInLock(self) == /\ pc[self] = "ShipRequestWestInLock"
                                /\ requests' = Append(requests, ([ship |-> self, lock |-> GetLock(shipLocations[self]), side |-> "west"]))
@@ -564,20 +599,20 @@ ShipRequestWestInLock(self) == /\ pc[self] = "ShipRequestWestInLock"
                                                valvesOpen, waterLevel, 
                                                shipLocations, shipStates, 
                                                lockCommand, permissions, moved, 
-                                               perm, req, oldLocation >>
+                                               perm, req, activeShipNumber >>
 
 ShipWaitForWestInLock(self) == /\ pc[self] = "ShipWaitForWestInLock"
                                /\ (permissions[self]) /= <<>>
                                /\ perm' = [perm EXCEPT ![self] = Head((permissions[self]))]
                                /\ permissions' = [permissions EXCEPT ![self] = Tail((permissions[self]))]
                                /\ Assert(perm'[self].lock = GetLock(shipLocations[self]), 
-                                         "Failure of assertion at line 218, column 13.")
+                                         "Failure of assertion at line 221, column 13.")
                                /\ pc' = [pc EXCEPT ![self] = "ShipMoveWest"]
                                /\ UNCHANGED << lockOrientations, doorsOpen, 
                                                valvesOpen, waterLevel, 
                                                shipLocations, shipStates, 
                                                lockCommand, requests, moved, 
-                                               req, oldLocation >>
+                                               req, activeShipNumber >>
 
 shipProcess(self) == ShipNextIteration(self) \/ ShipGoalReachedEast(self)
                         \/ ShipMoveEast(self) \/ ShipRequestWest(self)
@@ -596,18 +631,60 @@ ControlStart == /\ pc[0] = "ControlStart"
                 /\ req' = Head(requests)
                 /\ requests' = Tail(requests)
                 /\ moved' = [moved EXCEPT ![req'.ship] = FALSE]
-                /\ oldLocation' = shipLocations[req'.ship]
-                /\ pc' = [pc EXCEPT ![0] = "OpenValve"]
+                /\ pc' = [pc EXCEPT ![0] = "CheckEntranceIntoCanal"]
                 /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
                                 waterLevel, shipLocations, shipStates, 
-                                lockCommand, permissions, perm >>
+                                lockCommand, permissions, perm, 
+                                activeShipNumber >>
+
+CheckEntranceIntoCanal == /\ pc[0] = "CheckEntranceIntoCanal"
+                          /\ IF shipLocations[req.ship] = 0 \/ shipLocations[req.ship] = EastEnd
+                                THEN /\ IF activeShipNumber \geq MaxShipsLocation
+                                           THEN /\ permissions' = [permissions EXCEPT ![req.ship] = Append((permissions[req.ship]), ([lock |-> req.lock, granted |-> FALSE]))]
+                                                /\ pc' = [pc EXCEPT ![0] = "WaitCloseDoor"]
+                                                /\ UNCHANGED activeShipNumber
+                                           ELSE /\ activeShipNumber' = activeShipNumber + 1
+                                                /\ pc' = [pc EXCEPT ![0] = "CheckMechanicalValidityOfMove"]
+                                                /\ UNCHANGED permissions
+                                ELSE /\ pc' = [pc EXCEPT ![0] = "CheckMechanicalValidityOfMove"]
+                                     /\ UNCHANGED << permissions, 
+                                                     activeShipNumber >>
+                          /\ UNCHANGED << lockOrientations, doorsOpen, 
+                                          valvesOpen, waterLevel, 
+                                          shipLocations, shipStates, 
+                                          lockCommand, requests, moved, perm, 
+                                          req >>
+
+CheckMechanicalValidityOfMove == /\ pc[0] = "CheckMechanicalValidityOfMove"
+                                 /\ IF doorsOpen[req.lock][getOtherSide(req.side)] \/
+                                        valvesOpen[req.lock][getOtherSide(getValveSide(lockOrientations[req.lock], req.side))]
+                                       THEN /\ permissions' = [permissions EXCEPT ![req.ship] = Append((permissions[req.ship]), ([lock |-> req.lock, granted |-> FALSE]))]
+                                            /\ pc' = [pc EXCEPT ![0] = "WaitCloseDoor"]
+                                       ELSE /\ pc' = [pc EXCEPT ![0] = "CheckTargetLimit"]
+                                            /\ UNCHANGED permissions
+                                 /\ UNCHANGED << lockOrientations, doorsOpen, 
+                                                 valvesOpen, waterLevel, 
+                                                 shipLocations, shipStates, 
+                                                 lockCommand, requests, moved, 
+                                                 perm, req, activeShipNumber >>
+
+CheckTargetLimit == /\ pc[0] = "CheckTargetLimit"
+                    /\ IF ~NumberAtLocationCorrect(IF shipStates[req.ship] = "go_to_west" THEN shipLocations[req.ship] - 1 ELSE shipLocations[req.ship] + 1)
+                          THEN /\ permissions' = [permissions EXCEPT ![req.ship] = Append((permissions[req.ship]), ([lock |-> req.lock, granted |-> FALSE]))]
+                               /\ pc' = [pc EXCEPT ![0] = "WaitCloseDoor"]
+                          ELSE /\ pc' = [pc EXCEPT ![0] = "OpenValve"]
+                               /\ UNCHANGED permissions
+                    /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
+                                    waterLevel, shipLocations, shipStates, 
+                                    lockCommand, requests, moved, perm, req, 
+                                    activeShipNumber >>
 
 OpenValve == /\ pc[0] = "OpenValve"
              /\ lockCommand' = [lockCommand EXCEPT ![req.lock] = [command |-> "change_valve", open |-> TRUE, side |-> getValveSide(lockOrientations[req.lock], req.side)]]
              /\ pc' = [pc EXCEPT ![0] = "CloseValve"]
              /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
                              waterLevel, shipLocations, shipStates, requests, 
-                             permissions, moved, perm, req, oldLocation >>
+                             permissions, moved, perm, req, activeShipNumber >>
 
 CloseValve == /\ pc[0] = "CloseValve"
               /\ lockCommand[req.lock].command = "finished"
@@ -615,7 +692,7 @@ CloseValve == /\ pc[0] = "CloseValve"
               /\ pc' = [pc EXCEPT ![0] = "OpenDoor"]
               /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
                               waterLevel, shipLocations, shipStates, requests, 
-                              permissions, moved, perm, req, oldLocation >>
+                              permissions, moved, perm, req, activeShipNumber >>
 
 OpenDoor == /\ pc[0] = "OpenDoor"
             /\ lockCommand[req.lock].command = "finished"
@@ -623,26 +700,40 @@ OpenDoor == /\ pc[0] = "OpenDoor"
             /\ pc' = [pc EXCEPT ![0] = "GivePermission"]
             /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
                             waterLevel, shipLocations, shipStates, requests, 
-                            permissions, moved, perm, req, oldLocation >>
+                            permissions, moved, perm, req, activeShipNumber >>
 
 GivePermission == /\ pc[0] = "GivePermission"
                   /\ lockCommand[req.lock].command = "finished"
+                  /\ Assert(doorsOpen[req.lock][req.side], 
+                            "Failure of assertion at line 297, column 9.")
                   /\ permissions' = [permissions EXCEPT ![req.ship] = Append((permissions[req.ship]), ([lock |-> req.lock, granted |-> TRUE]))]
                   /\ pc' = [pc EXCEPT ![0] = "WaitForShipToPassAndCloseDoor"]
                   /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
                                   waterLevel, shipLocations, shipStates, 
                                   lockCommand, requests, moved, perm, req, 
-                                  oldLocation >>
+                                  activeShipNumber >>
 
 WaitForShipToPassAndCloseDoor == /\ pc[0] = "WaitForShipToPassAndCloseDoor"
                                  /\ moved[req.ship]
+                                 /\ moved' = [moved EXCEPT ![req.ship] = FALSE]
                                  /\ lockCommand' = [lockCommand EXCEPT ![req.lock] = [command |-> "change_door", open |-> FALSE, side |-> req.side]]
-                                 /\ pc' = [pc EXCEPT ![0] = "WaitCloseDoor"]
+                                 /\ pc' = [pc EXCEPT ![0] = "UpdateActiveShipCount"]
                                  /\ UNCHANGED << lockOrientations, doorsOpen, 
                                                  valvesOpen, waterLevel, 
                                                  shipLocations, shipStates, 
-                                                 requests, permissions, moved, 
-                                                 perm, req, oldLocation >>
+                                                 requests, permissions, perm, 
+                                                 req, activeShipNumber >>
+
+UpdateActiveShipCount == /\ pc[0] = "UpdateActiveShipCount"
+                         /\ IF shipStates[req.ship] = "goal_reached"
+                               THEN /\ activeShipNumber' = activeShipNumber - 1
+                               ELSE /\ TRUE
+                                    /\ UNCHANGED activeShipNumber
+                         /\ pc' = [pc EXCEPT ![0] = "WaitCloseDoor"]
+                         /\ UNCHANGED << lockOrientations, doorsOpen, 
+                                         valvesOpen, waterLevel, shipLocations, 
+                                         shipStates, lockCommand, requests, 
+                                         permissions, moved, perm, req >>
 
 WaitCloseDoor == /\ pc[0] = "WaitCloseDoor"
                  /\ lockCommand[req.lock].command = "finished"
@@ -650,23 +741,28 @@ WaitCloseDoor == /\ pc[0] = "WaitCloseDoor"
                  /\ UNCHANGED << lockOrientations, doorsOpen, valvesOpen, 
                                  waterLevel, shipLocations, shipStates, 
                                  lockCommand, requests, permissions, moved, 
-                                 perm, req, oldLocation >>
+                                 perm, req, activeShipNumber >>
 
-controlProcess == ControlStart \/ OpenValve \/ CloseValve \/ OpenDoor
+controlProcess == ControlStart \/ CheckEntranceIntoCanal
+                     \/ CheckMechanicalValidityOfMove \/ CheckTargetLimit
+                     \/ OpenValve \/ CloseValve \/ OpenDoor
                      \/ GivePermission \/ WaitForShipToPassAndCloseDoor
-                     \/ WaitCloseDoor
+                     \/ UpdateActiveShipCount \/ WaitCloseDoor
 
 Next == controlProcess
            \/ (\E self \in Locks: lockProcess(self))
            \/ (\E self \in Ships: shipProcess(self))
 
-Spec == Init /\ [][Next]_vars
+Spec == /\ Init /\ [][Next]_vars
+        /\ \A self \in Locks : WF_vars(lockProcess(self))
+        /\ \A self \in Ships : WF_vars(shipProcess(self))
+        /\ WF_vars(controlProcess)
 
 \* END TRANSLATION 
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Oct 08 19:29:36 CEST 2025 by 20241856
+\* Last modified Mon Oct 13 15:44:03 CEST 2025 by 20241856
 \* Last modified Fri Oct 03 10:34:10 CEST 2025 by 20241856
 \* Last modified Wed Sep 24 12:00:55 CEST 2025 by mvolk
 \* Created Thu Aug 28 11:30:07 CEST 2025 by mvolk
